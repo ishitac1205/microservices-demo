@@ -1,24 +1,103 @@
-import { useState, useEffect, useCallback } from 'react'
+import { Component, useState, useEffect, useCallback } from 'react'
 import { useTopology } from './hooks/useTopology'
-import { theme } from './styles/theme'
+import { useHistory } from './hooks/useHistory'
+import { useInfrastructure } from './hooks/useInfrastructure'
+import { useModelInsights } from './hooks/useModelInsights'
+import { useSystemLogs } from './hooks/useSystemLogs'
+import { ThemeProvider, useTheme } from './ThemeContext'
 import SolarSystem from './components/SolarSystem'
 import InfoPanel from './components/InfoPanel'
 import ServiceDetail from './components/ServiceDetail'
+import InfraPage from './components/InfraPage'
+import ModelsPage from './components/ModelsPage'
+import LogsPage from './components/LogsPage'
 
-const DOT_GRID = `radial-gradient(circle, #c8c0b0 1px, transparent 1px)`
+class InfraPageBoundary extends Component {
+  constructor(props) {
+    super(props)
+    this.state = { hasError: false, message: '' }
+  }
 
-export default function App() {
-  const { data, connected, error, fetchWindow, triggerRemediation } = useTopology()
+  static getDerivedStateFromError(error) {
+    return { hasError: true, message: error?.message || 'Unknown infrastructure page error' }
+  }
+
+  componentDidUpdate(prevProps) {
+    if (prevProps.resetKey !== this.props.resetKey && this.state.hasError) {
+      this.setState({ hasError: false, message: '' })
+    }
+  }
+
+  render() {
+    const { theme } = this.props
+    if (this.state.hasError) {
+      return (
+        <div style={{ flex: 1, padding: 32, color: theme.text, background: theme.bg, overflowY: 'auto' }}>
+          <div style={{ maxWidth: 760, border: `1px solid ${theme.borderLight}`, background: theme.card, padding: 24 }}>
+            <div style={{ fontSize: 12, letterSpacing: 1.6, textTransform: 'uppercase', color: theme.textMuted, marginBottom: 10 }}>
+              Infrastructure
+            </div>
+            <div style={{ fontSize: 28, lineHeight: 1.05, marginBottom: 12 }}>
+              The infrastructure page hit a rendering error.
+            </div>
+            <div style={{ fontSize: 12, lineHeight: 1.6, color: theme.textMuted }}>
+              The rest of the dashboard is still available. I’ve added guards so partial backend payloads do not break this page, but this fallback keeps the UI usable if a new field shape slips through.
+            </div>
+            <div style={{ marginTop: 16, fontSize: 11, color: theme.accent }}>
+              {this.state.message}
+            </div>
+          </div>
+        </div>
+      )
+    }
+    return this.props.children
+  }
+}
+
+function getPageFromLocation() {
+  if (typeof window === 'undefined') return 'solar'
+  const hash = window.location.hash.replace('#', '').trim().toLowerCase()
+  if (hash === 'infra') return 'infra'
+  if (hash === 'models') return 'models'
+  if (hash === 'logs') return 'logs'
+  return 'solar'
+}
+
+function AppInner() {
+  const { theme, dark, setDark } = useTheme()
+  const { data, connected, error, fetchWindow, triggerRemediation, triggerDemo } = useTopology()
+  const { history, incidents } = useHistory()
+  const infrastructure = useInfrastructure()
+  const modelInsights = useModelInsights()
+  const systemLogs = useSystemLogs()
   const [selectedService, setSelectedService] = useState(null)
   const [windowData, setWindowData] = useState(null)
   const [windowLoading, setWindowLoading] = useState(false)
+  const [page, setPage] = useState(getPageFromLocation)
+  const [demoBusy, setDemoBusy] = useState(false)
+  const [, setTick] = useState(0)
+
+  useEffect(() => {
+    const t = setInterval(() => setTick(n => n + 1), 500)
+    return () => clearInterval(t)
+  }, [])
+
+  useEffect(() => {
+    const onHashChange = () => setPage(getPageFromLocation())
+    window.addEventListener('hashchange', onHashChange)
+    onHashChange()
+    return () => window.removeEventListener('hashchange', onHashChange)
+  }, [])
+
+  useEffect(() => {
+    const nextHash = page === 'infra' ? '#infra' : page === 'models' ? '#models' : page === 'logs' ? '#logs' : '#solar'
+    if (window.location.hash !== nextHash) {
+      window.history.replaceState(null, '', nextHash)
+    }
+  }, [page])
 
   const handleSelectService = useCallback(async (svc) => {
-    if (svc === selectedService) {
-      setSelectedService(null)
-      setWindowData(null)
-      return
-    }
+    if (svc === selectedService) { setSelectedService(null); setWindowData(null); return }
     setSelectedService(svc)
     setWindowLoading(true)
     const wd = await fetchWindow(svc)
@@ -26,7 +105,6 @@ export default function App() {
     setWindowLoading(false)
   }, [selectedService, fetchWindow])
 
-  // Refresh window data every 5s when a service is selected
   useEffect(() => {
     if (!selectedService) return
     const interval = setInterval(async () => {
@@ -37,120 +115,161 @@ export default function App() {
   }, [selectedService, fetchWindow])
 
   const selectedData = data?.services?.[selectedService]
+  const latestDemo = data?.demo_run || null
+  const demoRunning = latestDemo?.status === 'running'
+  const DOT_GRID = `radial-gradient(circle, ${theme.bgDot} 1px, transparent 1px)`
+
+  const handleDemoRun = useCallback(async () => {
+    setDemoBusy(true)
+    try {
+      await triggerDemo('recommendationservice', 'admin')
+      setPage('logs')
+    } catch (demoError) {
+      console.error('Demo run failed to start:', demoError)
+    } finally {
+      setDemoBusy(false)
+    }
+  }, [triggerDemo])
+
+  const navBtn = (key, label, hint) => ({
+    style: {
+      fontFamily: theme.displayFont || theme.font,
+      fontSize: 12,
+      fontWeight: page === key ? 600 : 400,
+      letterSpacing: 0.8,
+      padding: '7px 14px 8px',
+      borderRadius: 999,
+      border: `1px solid ${page === key ? theme.border : theme.borderLight}`,
+      background: page === key ? theme.border : 'transparent',
+      color: page === key ? theme.bg : theme.text,
+      cursor: 'pointer',
+      transition: 'all 0.2s',
+      display: 'flex',
+      flexDirection: 'column',
+      alignItems: 'flex-start',
+      minWidth: 132,
+    },
+    onClick: () => setPage(key),
+    children: (
+      <>
+        <span>{label}</span>
+        <span style={{
+          fontFamily: theme.font,
+          fontSize: 8,
+          letterSpacing: 1.2,
+          color: page === key ? theme.bg : theme.textMuted,
+          marginTop: 2,
+          textTransform: 'uppercase',
+        }}>
+          {hint}
+        </span>
+      </>
+    ),
+  })
 
   return (
-    <div style={{
-      width: '100vw', height: '100vh', display: 'flex', flexDirection: 'column',
-      background: theme.bg,
-      backgroundImage: DOT_GRID,
-      backgroundSize: '24px 24px',
-      fontFamily: theme.font,
-      overflow: 'hidden',
-    }}>
+    <div style={{ width: '100vw', height: '100vh', display: 'flex', flexDirection: 'column', background: theme.bg, backgroundImage: DOT_GRID, backgroundSize: '24px 24px', fontFamily: theme.font, overflow: 'hidden' }}>
       {/* Top bar */}
-      <div style={{
-        height: 42, borderBottom: `2px solid ${theme.border}`,
-        display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-        padding: '0 20px', background: theme.bg, flexShrink: 0,
-      }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
-          <span style={{ fontSize: 13, fontWeight: 'bold', letterSpacing: 2, color: theme.text }}>
-            ⊕ MISSION CONTROL
-          </span>
-          <span style={{ fontSize: 9, color: theme.textMuted, letterSpacing: 1 }}>
-            AI OBSERVABILITY PLATFORM — SOLAR SYSTEM INTERFACE
-          </span>
+      <div style={{ minHeight: 58, borderBottom: `2px solid ${theme.border}`, display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '8px 20px', background: theme.bg, flexShrink: 0, gap: 16 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 20, minWidth: 0 }}>
+          <span style={{ fontSize: 24, fontWeight: 900, letterSpacing: 6, color: theme.text, lineHeight: 1 }}>AEGIS</span>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            <button {...navBtn('solar', 'SOLAR SYSTEM', 'Service topology')} />
+            <button {...navBtn('infra', 'INFRASTRUCTURE', 'Cluster operations')} />
+            <button {...navBtn('models', 'MODEL INSIGHTS', 'ML telemetry')} />
+            <button {...navBtn('logs', 'SYSTEM LOGS', 'Timeline and persistence')} />
+            <button
+              onClick={handleDemoRun}
+              disabled={demoBusy || demoRunning}
+              style={{
+                fontFamily: theme.displayFont || theme.font,
+                fontSize: 12,
+                fontWeight: 600,
+                letterSpacing: 0.8,
+                padding: '7px 14px 8px',
+                borderRadius: 999,
+                border: `1px solid ${demoRunning ? theme.accent : theme.borderLight}`,
+                background: demoRunning ? theme.accent : 'transparent',
+                color: demoRunning ? theme.bg : theme.text,
+                cursor: demoBusy || demoRunning ? 'not-allowed' : 'pointer',
+                transition: 'all 0.2s',
+                display: 'flex',
+                flexDirection: 'column',
+                alignItems: 'flex-start',
+                minWidth: 132,
+                opacity: demoBusy || demoRunning ? 0.8 : 1,
+              }}
+            >
+              <span>{demoRunning ? 'DEMO RUNNING' : demoBusy ? 'STARTING DEMO' : 'RUN DEMO'}</span>
+              <span style={{
+                fontFamily: theme.font,
+                fontSize: 8,
+                letterSpacing: 1.2,
+                color: demoRunning ? theme.bg : theme.textMuted,
+                marginTop: 2,
+                textTransform: 'uppercase',
+              }}>
+                {demoRunning ? latestDemo?.service || 'Autonomous recovery' : 'Attack + autonomous fix'}
+              </span>
+            </button>
+          </div>
         </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 14, fontSize: 10 }}>
-          {data?.demo_mode && (
-            <span style={{
-              border: `1px solid #c45c0a`, color: '#c45c0a',
-              padding: '2px 6px', fontSize: 9, letterSpacing: 1,
-            }}>DEMO MODE</span>
-          )}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 14, fontSize: 10, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
           <span style={{ display: 'flex', alignItems: 'center', gap: 5, color: connected ? '#2a8a2a' : '#cc2222' }}>
-            <span style={{
-              width: 7, height: 7, borderRadius: '50%', display: 'inline-block',
-              background: connected ? '#2a8a2a' : '#cc2222',
-              animation: connected ? 'pulse 2s infinite' : 'none',
-            }} />
-            {connected ? 'CONNECTED' : `OFFLINE${error ? ': ' + error : ''}`}
+            <span style={{ width: 7, height: 7, borderRadius: '50%', display: 'inline-block', background: connected ? '#2a8a2a' : '#cc2222', animation: connected ? 'pulse 2s infinite' : 'none' }} />
+            {connected ? 'Backend connected' : `Backend offline${error ? `: ${error}` : ''}`}
           </span>
-          {data && (
-            <span style={{ color: theme.textMuted }}>
-              {new Date(data.timestamp).toLocaleTimeString()}
-            </span>
-          )}
+          <span style={{ color: theme.textMuted }}>{new Date().toLocaleTimeString('en-US', { hour12: false })}</span>
+          <button onClick={() => setDark(d => !d)} style={{ fontFamily: theme.font, fontSize: 10, padding: '3px 10px', border: `1px solid ${theme.borderLight}`, background: 'transparent', color: theme.textMuted, cursor: 'pointer', letterSpacing: 1 }}>
+            {dark ? '☀ LIGHT' : '◑ DARK'}
+          </button>
         </div>
       </div>
 
-      {/* Main layout */}
-      <div style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
-        {/* Solar system canvas */}
-        <div style={{
-          flex: 1, position: 'relative', borderRight: `2px solid ${theme.border}`,
-          overflow: 'hidden',
-        }}>
-          <SolarSystem
-            topology={data}
-            selectedService={selectedService}
-            onSelectService={handleSelectService}
-          />
+      {page === 'solar' ? (
+        <div style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
+          <div style={{ flex: 1, position: 'relative', borderRight: `2px solid ${theme.border}`, overflow: 'hidden' }}>
+            <SolarSystem topology={data} selectedService={selectedService} onSelectService={handleSelectService} />
+          </div>
+          <div style={{ width: 300, flexShrink: 0, background: theme.bg, overflowY: 'auto' }}>
+            <InfoPanel topology={data}>
+              {selectedService && (
+                <ServiceDetail service={selectedService} data={selectedData} windowData={windowLoading ? null : windowData} onRemediate={triggerRemediation} onClose={() => { setSelectedService(null); setWindowData(null) }} />
+              )}
+            </InfoPanel>
+          </div>
         </div>
+      ) : page === 'infra' ? (
+        <InfraPageBoundary resetKey={`${page}-${data?.timestamp || 'none'}-${infrastructure?.timestamp || 'none'}`} theme={theme}>
+          <InfraPage topology={data} history={history} incidents={incidents} connected={connected} infrastructure={infrastructure} />
+        </InfraPageBoundary>
+      ) : page === 'models' ? (
+        <ModelsPage insights={modelInsights} topology={data} history={history} connected={connected} />
+      ) : (
+        <LogsPage events={systemLogs.events} logs={systemLogs.logs} timestamp={systemLogs.timestamp} topology={data} connected={connected} />
+      )}
 
-        {/* Right panel */}
-        <div style={{
-          width: 300, flexShrink: 0, background: theme.bg,
-          overflowY: 'auto',
-        }}>
-          <InfoPanel
-            topology={data}
-            selectedService={selectedService}
-            serviceData={selectedData}
-            windowData={windowData}
-            onRemediate={triggerRemediation}
-            onClose={() => { setSelectedService(null); setWindowData(null) }}
-          >
-            {selectedService && (
-              <ServiceDetail
-                service={selectedService}
-                data={selectedData}
-                windowData={windowLoading ? null : windowData}
-                onRemediate={triggerRemediation}
-                onClose={() => { setSelectedService(null); setWindowData(null) }}
-              />
-            )}
-          </InfoPanel>
-        </div>
-      </div>
-
-      {/* Bottom status bar */}
-      <div style={{
-        height: 26, borderTop: `1px solid ${theme.borderLight}`,
-        display: 'flex', alignItems: 'center', padding: '0 16px', gap: 20,
-        fontSize: 9, color: theme.textMuted, background: theme.bg, flexShrink: 0,
-      }}>
-        <span>Built with React + D3.js (2D) · All animations: CSS keyframes</span>
-        <span style={{ marginLeft: 'auto' }}>
-          {data ? `${Object.keys(data.services || {}).length} services monitored` : 'Connecting...'}
-        </span>
-        {selectedService && (
-          <span style={{ color: '#c45c0a' }}>
-            SELECTED: {selectedService} · Click again to deselect
-          </span>
-        )}
+      <div style={{ height: 26, borderTop: `1px solid ${theme.borderLight}`, display: 'flex', alignItems: 'center', padding: '0 16px', gap: 20, fontSize: 9, color: theme.textMuted, background: theme.bg, flexShrink: 0 }}>
+        <span>{page === 'infra' ? 'Direct link: #infra' : page === 'models' ? 'Direct link: #models' : page === 'logs' ? 'Direct link: #logs' : 'Direct link: #solar'}</span>
+        <span style={{ marginLeft: 'auto' }}>{data ? `${Object.keys(data.services || {}).length} services monitored` : 'Connecting...'}</span>
+        {selectedService && page === 'solar' && <span style={{ color: theme.accent }}>SELECTED: {selectedService} · Click again to deselect</span>}
       </div>
 
       <style>{`
-        @keyframes pulse {
-          0%, 100% { opacity: 1; }
-          50% { opacity: 0.5; }
-        }
+        @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
         * { box-sizing: border-box; }
         ::-webkit-scrollbar { width: 6px; }
         ::-webkit-scrollbar-track { background: ${theme.bg}; }
-        ::-webkit-scrollbar-thumb { background: #aaa; }
+        ::-webkit-scrollbar-thumb { background: ${theme.borderLight}; }
       `}</style>
     </div>
+  )
+}
+
+export default function App() {
+  return (
+    <ThemeProvider>
+      <AppInner />
+    </ThemeProvider>
   )
 }

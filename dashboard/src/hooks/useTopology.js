@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
-const API = 'http://localhost:8001'
+import { API_BASE, OPERATOR_HEADERS } from '../api'
 const POLL_MS = 2000
 
 export function useTopology() {
@@ -12,7 +12,7 @@ export function useTopology() {
     const ctrl = new AbortController()
     const timer = setTimeout(() => ctrl.abort(), 4000)
     try {
-      const res = await fetch(`${API}/topology`, { signal: ctrl.signal })
+      const res = await fetch(`${API_BASE}/topology`, { signal: ctrl.signal })
       clearTimeout(timer)
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
       const json = await res.json()
@@ -34,19 +34,32 @@ export function useTopology() {
 
   const fetchWindow = useCallback(async (service) => {
     try {
-      const res = await fetch(`${API}/window/${service}`)
+      const res = await fetch(`${API_BASE}/window/${service}`)
       return await res.json()
     } catch { return null }
   }, [])
 
   const triggerRemediation = useCallback(async (service, failureType = 'generic_anomaly') => {
-    const res = await fetch(`${API}/remediate`, {
+    const res = await fetch(`${API_BASE}/remediate`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...OPERATOR_HEADERS },
       body: JSON.stringify({ service, failure_type: failureType }),
     })
     return await res.json()
   }, [])
 
-  return { data, connected, error, fetchWindow, triggerRemediation }
+  const triggerDemo = useCallback(async (service = 'recommendationservice', owner = 'operator') => {
+    const res = await fetch(`${API_BASE}/demo/run`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...OPERATOR_HEADERS },
+      body: JSON.stringify({ service, owner }),
+    })
+    if (!res.ok) {
+      const payload = await res.json().catch(() => ({}))
+      throw new Error(payload?.detail || `HTTP ${res.status}`)
+    }
+    return await res.json()
+  }, [])
+
+  return { data, connected, error, fetchWindow, triggerRemediation, triggerDemo }
 }
